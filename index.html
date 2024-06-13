@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Soil Analysis Tool</title>
+    <link rel="stylesheet" href="https://js.arcgis.com/4.29/esri/themes/light/main.css">
+    <script src="https://js.arcgis.com/4.29/"></script>
+    <style>
+        html, body, #viewDiv {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        .popup-container {
+            font-family: Arial, sans-serif;
+            line-height: 1.5;
+        }
+        .popup-section {
+            margin-bottom: 10px;
+        }
+        .export-button {
+            display: block;
+            margin-top: 10px;
+            padding: 5px 10px;
+            background-color: #0079c1;
+            color: white;
+            border: none;
+            cursor: pointer;
+            border-radius: 3px;
+        }
+        .esri-popup__main-container {
+            max-height: 600px; /* Increase the max height to reduce scrolling */
+        }
+        .underdrain-required {
+            font-weight: bold;
+            font-size: larger;
+        }
+        .underdrain-yes {
+            color: red;
+        }
+        .underdrain-no {
+            color: green;
+        }
+        .disclaimer {
+            margin-top: 15px;
+            font-size: smaller;
+            color: gray;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="viewDiv"></div>
+    <div id="popup" class="popup-container"></div>
+    <script>
+        require([
+            "esri/Map",
+            "esri/views/MapView",
+            "esri/layers/FeatureLayer",
+            "esri/widgets/Search",
+            "esri/config",
+            "esri/layers/GraphicsLayer",
+            "esri/rest/support/Query",
+            "esri/rest/imageService",
+            "esri/rest/support/ImageIdentifyParameters",
+            "esri/symbols/SimpleLineSymbol"
+        ], function(Map, MapView, FeatureLayer, Search, esriConfig, GraphicsLayer, Query, imageService, ImageIdentifyParameters, SimpleLineSymbol) {
+
+            // Set the API key
+            esriConfig.apiKey = "AAPKc28b85ed83be4c1987c3077b66d5c8c6XZzg8SB4zrZrLAJiwTsRPmM1ncSKErTr3o_m4PGFXY8sOcOGg2eNisw5HfY0RQZQ";
+
+            // Initialize the map and view
+            const map = new Map({
+                basemap: "streets"
+            });
+
+            const view = new MapView({
+                container: "viewDiv",
+                map: map,
+                center: [-85.0, 37.8393], // Adjusted center to better fit Kentucky
+                zoom: 7,
+                popup: {
+                    dockEnabled: true,
+                    dockOptions: {
+                        buttonEnabled: false,
+                        breakpoint: false,
+                        position: "right"
+                    }
+                }
+            });
+
+            // Add the FeatureLayer for soil data
+            const soilLayer = new FeatureLayer({
+                url: "https://landscape11.arcgis.com/arcgis/rest/services/USA_Soils_Map_Units/FeatureServer/0",
+                visible: false
+            });
+            map.add(soilLayer);
+
+            // Add the Hydrologic Units layer
+            const hydrologicLayer = new FeatureLayer({
+                url: "https://services.arcgis.com/vQ8kO5zdqETeirEL/arcgis/rest/services/Ky_8_10_and_12_Digit_Hydrologic_Units/FeatureServer/0",
+                visible: false
+            });
+            map.add(hydrologicLayer);
+
+            // Add the Kentucky boundary layer with thicker lines
+            const kentuckyBoundaryLayer = new FeatureLayer({
+                url: "https://services.arcgis.com/vQ8kO5zdqETeirEL/arcgis/rest/services/Congress_WFL1/FeatureServer/0",
+                renderer: {
+                    type: "simple",
+                    symbol: {
+                        type: "simple-line",
+                        color: [255, 0, 0, 0.8], // Red color with 80% opacity
+                        width: 2 // Line thickness
+                    }
+                },
+                visible: true
+            });
+            map.add(kentuckyBoundaryLayer);
+
+            // Add the Image Service layer for elevation
+            const elevationLayerUrl = "https://kyraster.ky.gov/arcgis/rest/services/ElevationServices/Ky_DEM_KYAPED_5FT/ImageServer";
+
+            // Search widget for address input
+            const search = new Search({
+                view: view
+            });
+            view.ui.add(search, "top-right");
+
+            // Handle the search result
+            search.on("select-result", function(event) {
+                const geometry = event.result.feature.geometry;
+                analyzeAreaData(geometry, true);
+            });
+
+            // Function to analyze soil data and data from the hydrologic layer
+            function analyzeAreaData(geometry, isPoint) {
+                console.log("Querying data for geometry: ", geometry);
+
+                // Query soil data
+                const soilQuery = soilLayer.createQuery();
+                soilQuery.geometry = geometry;
+                soilQuery.spatialRelationship = "intersects";
+                soilQuery.outFields = [
+                    "muname", "aws025wta", "aws050wta", "aws0100wta", "aws0150wta",
+                    "hydgrpdcd", "runoff", "ksat", "corcon", "slope_r",
+                    "wtdepannmin", "wtdepaprjunmin", "brockdepmin", "flodfreqdcd"
+                ];
+                soilQuery.returnGeometry = false;
+
+                soilLayer.queryFeatures(soilQuery).then(function(soilResults) {
+                    const soilFeatures = soilResults.features;
+                    let soilAttributes = {};
+                    if (soilFeatures.length > 0) {
+                        soilAttributes = soilFeatures[0].attributes;
+                    } else {
+                        soilAttributes = {
+                            muname: "No data",
+                            aws025wta: "No data",
+                            aws050wta: "No data",
+                            aws0100wta: "No data",
+                            aws0150wta: "No data",
+                            hydgrpdcd: "No data",
+                            runoff: "No data",
+                            ksat: "No data",
+                            corcon: "No data",
+                            slope_r: "No data",
+                            wtdepannmin: "No data",
+                            wtdepaprjunmin: "No data",
+                            brockdepmin: "No data",
+                            flodfreqdcd: "No data"
+                        };
+                    }
+
+                    // Query hydrologic units data
+                    const hydrologicQuery = hydrologicLayer.createQuery();
+                    hydrologicQuery.geometry = geometry;
+                    hydrologicQuery.spatialRelationship = "intersects";
+                    hydrologicQuery.outFields = ["name"];
+                    hydrologicQuery.returnGeometry = false;
+
+                    hydrologicLayer.queryFeatures(hydrologicQuery).then(function(hydrologicResults) {
+                        const hydrologicFeatures = hydrologicResults.features;
+                        let hydrologicAttributes = hydrologicFeatures.length > 0 ? hydrologicFeatures[0].attributes : { name: "No data" };
+
+                        // Query elevation data if the geometry is a point
+                        if (isPoint) {
+                            const params = new ImageIdentifyParameters({
+                                geometry: geometry,
+                                returnCatalogItems: false,
+                                mosaicRule: null
+                            });
+                            imageService.identify(elevationLayerUrl, params).then(function(result) {
+                                const elevationValue = result.value;
+                                showCustomPopup(geometry, soilAttributes, hydrologicAttributes, elevationValue);
+                            });
+                        } else {
+                            showCustomPopup(geometry, soilAttributes, hydrologicAttributes, null);
+                        }
+                    });
+                }).catch(function(error) {
+                    console.error("Query failed: ", error);
+                    showCustomPopup(geometry, {}, {}, null, true);
+                });
+            }
+
+            // Function to display custom popup
+            function showCustomPopup(geometry, soilAttributes, hydrologicAttributes, elevationValue, isError) {
+                let content = "";
+                if (isError) {
+                    content = "Failed to retrieve data. Please check the console for more details.";
+                } else {
+                    const ksatValue = parseFloat(soilAttributes.ksat) || 0;
+                    const underdrainRequired = ksatValue < 1.27 ? "Yes" : "No";
+                    const underdrainMessage = underdrainRequired === "Yes" ? 
+                        "Based on the Soil Hydraulic Conductivity you may need an Underdrain System." : 
+                        "Based on the Soil Hydraulic Conductivity you do not need an Underdrain System.";
+
+                    content = `
+                        <div class='popup-section'><b>Site Information</b><br>
+                        <b>HUC-12 Name:</b> ${hydrologicAttributes.name}<br>
+                        <b>Elevation:</b> ${elevationValue !== null ? elevationValue : "N/A"}<br><br>
+                        <b>Soil Name:</b> ${soilAttributes.muname}<br>
+                        <b>Slope (%):</b> ${soilAttributes.slope_r}<br>
+                        <b>Corrosion of Concrete:</b> ${soilAttributes.corcon}<br>
+                        <b>Bedrock Depth (Min):</b> ${soilAttributes.brockdepmin}<br>
+                        <b>Water Table Depth (Annual Min):</b> ${soilAttributes.wtdepannmin}<br>
+                        <b>Water Table Depth (April-June Min):</b> ${soilAttributes.wtdepaprjunmin}<br>
+                        <b>Available Water Storage (0-25 cm):</b> ${soilAttributes.aws025wta}<br>
+                        <b>Available Water Storage (25-50 cm):</b> ${soilAttributes.aws050wta}<br>
+                        <b>Available Water Storage (50-100 cm):</b> ${soilAttributes.aws0100wta}<br>
+                        <b>Available Water Storage (100-150 cm):</b> ${soilAttributes.aws0150wta}<br>
+                        <b>Hydrologic Group:</b> ${soilAttributes.hydgrpdcd}<br>
+                        <b>Runoff:</b> ${soilAttributes.runoff}<br>
+                        <b>Flood Frequency:</b> ${soilAttributes.flodfreqdcd}<br><br>
+                        <b>Hydraulic Conductivity (ksat cm/hr):</b> ${soilAttributes.ksat}<br>
+                        <b class='underdrain-required ${underdrainRequired === "Yes" ? "underdrain-yes" : "underdrain-no"}'>
+                        Underdrain Required: ${underdrainRequired}</b><br>
+                        ${underdrainMessage}
+                        </div>
+                        <div class='disclaimer'>
+                        Disclaimer: This information is based on available data and should be verified with a field inspection.
+                        </div>
+                        <button class='export-button'>Export</button>
+                    `;
+                }
+
+                const popup = document.getElementById("popup");
+                popup.innerHTML = content;
+                view.popup.open({
+                    location: geometry,
+                    content: popup
+                });
+
+                if (!isError) {
+                    setTimeout(function() {
+                        const exportButton = document.querySelector(".export-button");
+                        if (exportButton) {
+                            exportButton.addEventListener("click", function() {
+                                exportPopupContent(popup.innerHTML);
+                            });
+                        }
+                    }, 500);
+                }
+            }
+
+            // Function to export popup content
+            function exportPopupContent(content) {
+                const blob = new Blob([content], { type: 'text/plain' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = 'area_analysis.txt';
+                link.click();
+            }
+        });
+    </script>
+</body>
+
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
